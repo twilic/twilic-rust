@@ -41,6 +41,28 @@ mod tests {
     use crate::session::UnknownReferencePolicy;
 
     #[test]
+    fn v2_decode_rejects_excessive_nesting() {
+        let mut bytes = Vec::with_capacity(128);
+        for _ in 0..(v2::DEFAULT_MAX_DECODE_DEPTH + 1) {
+            bytes.push(0xA1);
+        }
+        bytes.push(0xC0);
+        let err = v2::decode(&bytes).expect_err("expected depth limit error");
+        assert!(err.to_string().contains("decode depth limit exceeded"));
+    }
+
+    #[test]
+    fn v2_decode_allows_max_nesting() {
+        let mut bytes = Vec::with_capacity(128);
+        for _ in 0..v2::DEFAULT_MAX_DECODE_DEPTH {
+            bytes.push(0xA1);
+        }
+        bytes.push(0xC0);
+        let value = v2::decode(&bytes).expect("decode at max depth");
+        assert!(matches!(value, Value::Array(_)));
+    }
+
+    #[test]
     fn roundtrip_dynamic_value() {
         let value = Value::Map(vec![
             ("id".to_string(), Value::U64(1001)),

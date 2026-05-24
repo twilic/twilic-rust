@@ -42,11 +42,38 @@ struct EncodeState {
     next_shape_id: u64,
 }
 
+pub const DEFAULT_MAX_DECODE_DEPTH: usize = 64;
+
+const DECODE_DEPTH_LIMIT_MSG: &str = "decode depth limit exceeded";
+
 #[derive(Default)]
 struct DecodeState {
     keys: Vec<String>,
     strings: Vec<String>,
     shapes: Vec<Vec<String>>,
+    depth: usize,
+    max_depth: usize,
+}
+
+impl DecodeState {
+    fn new() -> Self {
+        Self {
+            max_depth: DEFAULT_MAX_DECODE_DEPTH,
+            ..Self::default()
+        }
+    }
+
+    fn enter_container(&mut self) -> Result<()> {
+        if self.depth >= self.max_depth {
+            return Err(TwilicError::InvalidData(DECODE_DEPTH_LIMIT_MSG));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn leave_container(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
 }
 
 pub fn encode(value: &Value) -> Result<Vec<u8>> {
@@ -58,7 +85,7 @@ pub fn encode(value: &Value) -> Result<Vec<u8>> {
 
 pub fn decode(bytes: &[u8]) -> Result<Value> {
     let mut reader = Reader::new(bytes);
-    let mut state = DecodeState::default();
+    let mut state = DecodeState::new();
     let value = decode_value(&mut reader, &mut state)?;
     if !reader.is_eof() {
         return Err(TwilicError::InvalidData("trailing bytes in v2 decode"));
@@ -428,6 +455,17 @@ fn decode_array_body(
     state: &mut DecodeState,
     len: usize,
 ) -> Result<Value> {
+    state.enter_container()?;
+    let decoded = decode_array_body_inner(reader, state, len);
+    state.leave_container();
+    decoded
+}
+
+fn decode_array_body_inner(
+    reader: &mut Reader<'_>,
+    state: &mut DecodeState,
+    len: usize,
+) -> Result<Value> {
     let mut values = Vec::with_capacity(len);
     if len == 0 {
         return Ok(Value::Array(values));
@@ -461,13 +499,18 @@ fn decode_array_body(
 }
 
 fn decode_map_body(reader: &mut Reader<'_>, state: &mut DecodeState, len: usize) -> Result<Value> {
+    state.enter_container()?;
     let mut entries = Vec::with_capacity(len);
-    for _ in 0..len {
-        let key = decode_key(reader, state)?;
-        let value = decode_value(reader, state)?;
-        entries.push((key, value));
-    }
-    Ok(Value::Map(entries))
+    let decoded = (|| {
+        for _ in 0..len {
+            let key = decode_key(reader, state)?;
+            let value = decode_value(reader, state)?;
+            entries.push((key, value));
+        }
+        Ok(Value::Map(entries))
+    })();
+    state.leave_container();
+    decoded
 }
 
 fn decode_key(reader: &mut Reader<'_>, state: &mut DecodeState) -> Result<String> {
