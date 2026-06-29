@@ -3,9 +3,7 @@ use ahash::HashMap;
 use crate::{
     error::{Result, TwilicError},
     model::Value,
-    wire::{
-        DEFAULT_MAX_DECODE_COUNT, Reader, check_byte_len, check_decode_count, encode_varuint,
-    },
+    wire::{DEFAULT_MAX_DECODE_COUNT, Reader, check_byte_len, check_decode_count, encode_varuint},
 };
 
 const NULL_TAG: u8 = 0xC0;
@@ -386,22 +384,14 @@ fn decode_value_from_tag(
             len.copy_from_slice(reader.read_exact(2)?);
             let len = u16::from_le_bytes(len) as usize;
             check_byte_len(len, reader.remaining())?;
-            Ok(Value::Binary(
-                reader
-                    .read_exact(len)?
-                    .to_vec(),
-            ))
+            Ok(Value::Binary(reader.read_exact(len)?.to_vec()))
         }
         BIN32_TAG => {
             let mut len = [0u8; 4];
             len.copy_from_slice(reader.read_exact(4)?);
             let len = u32::from_le_bytes(len) as usize;
             check_byte_len(len, reader.remaining())?;
-            Ok(Value::Binary(
-                reader
-                    .read_exact(len)?
-                    .to_vec(),
-            ))
+            Ok(Value::Binary(reader.read_exact(len)?.to_vec()))
         }
         STR8_TAG | STR16_TAG | STR32_TAG => decode_string_tag(reader, state, tag),
         ARRAY16_TAG => {

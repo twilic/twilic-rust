@@ -22,7 +22,12 @@ pub fn check_byte_len(len: usize, remaining: usize) -> Result<()> {
 }
 
 #[inline]
-pub fn check_element_bytes(count: usize, element_bytes: usize, remaining: usize, max: usize) -> Result<()> {
+pub fn check_element_bytes(
+    count: usize,
+    element_bytes: usize,
+    remaining: usize,
+    max: usize,
+) -> Result<()> {
     check_decode_count(count, max)?;
     match count.checked_mul(element_bytes) {
         Some(needed) if needed <= remaining => Ok(()),
@@ -121,7 +126,8 @@ impl<'a> Reader<'a> {
 
     pub fn read_bounded_count(&mut self, max: usize) -> Result<usize> {
         let raw = self.read_varuint()?;
-        let count = usize::try_from(raw).map_err(|_| TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG))?;
+        let count =
+            usize::try_from(raw).map_err(|_| TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG))?;
         check_decode_count(count, max)?;
         Ok(count)
     }

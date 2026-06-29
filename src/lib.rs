@@ -84,7 +84,9 @@ mod tests {
         let mut payload = Vec::new();
         encode_varuint(DEFAULT_MAX_DECODE_COUNT as u64 + 1, &mut payload);
         let mut reader = Reader::new(&payload);
-        let err = reader.read_bitmap().expect_err("expected count limit error");
+        let err = reader
+            .read_bitmap()
+            .expect_err("expected count limit error");
         assert!(err.to_string().contains(DECODE_COUNT_LIMIT_MSG));
     }
 

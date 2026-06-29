@@ -13,8 +13,8 @@ use crate::{
         DictionaryFallback, DictionaryProfile, SessionOptions, SessionState, UnknownReferencePolicy,
     },
     wire::{
-        DEFAULT_MAX_DECODE_COUNT, Reader, check_decode_count, decode_zigzag, encode_bitmap, encode_bytes, encode_string, encode_varuint, encode_zigzag,
-        extend_repeat,
+        DEFAULT_MAX_DECODE_COUNT, Reader, check_decode_count, decode_zigzag, encode_bitmap,
+        encode_bytes, encode_string, encode_varuint, encode_zigzag, extend_repeat,
     },
 };
 
