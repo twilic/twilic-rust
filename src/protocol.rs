@@ -4160,7 +4160,8 @@ mod tests {
 
         let err = rle_decode_bytes(&encoded).expect_err("expected output ratio guard");
         assert!(
-            err.to_string().contains(crate::wire::DECODE_OUTPUT_RATIO_MSG),
+            err.to_string()
+                .contains(crate::wire::DECODE_OUTPUT_RATIO_MSG),
             "unexpected error: {err}"
         );
     }
