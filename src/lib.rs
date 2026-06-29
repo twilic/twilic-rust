@@ -10,7 +10,7 @@ pub use error::{Result, TwilicError};
 pub use model::{Message, Schema, Value};
 pub use protocol::{SessionEncoder, TwilicCodec};
 pub use session::{SessionOptions, UnknownReferencePolicy};
-pub use wire::DEFAULT_MAX_DECODE_COUNT;
+pub use wire::{DEFAULT_MAX_DECODE_COUNT, DEFAULT_MAX_DECODE_OUTPUT_RATIO};
 
 pub fn encode(value: &Value) -> Result<Vec<u8>> {
     v2::encode(value)
@@ -88,6 +88,16 @@ mod tests {
             .read_bitmap()
             .expect_err("expected count limit error");
         assert!(err.to_string().contains(DECODE_COUNT_LIMIT_MSG));
+    }
+
+    #[test]
+    fn wire_extend_repeat_rejects_output_ratio_bomb() {
+        use crate::wire::{DECODE_OUTPUT_RATIO_MSG, extend_repeat_with_budget};
+        let mut out = Vec::new();
+        let err = extend_repeat_with_budget(&mut out, 0u8, 100_000, 1, Some(8))
+            .expect_err("expected output ratio error");
+        assert!(err.to_string().contains(DECODE_OUTPUT_RATIO_MSG));
+        assert!(out.is_empty());
     }
 
     #[test]

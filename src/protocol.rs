@@ -13,8 +13,9 @@ use crate::{
         DictionaryFallback, DictionaryProfile, SessionOptions, SessionState, UnknownReferencePolicy,
     },
     wire::{
-        DEFAULT_MAX_DECODE_COUNT, Reader, check_decode_count, decode_zigzag, encode_bitmap,
-        encode_bytes, encode_string, encode_varuint, encode_zigzag, extend_repeat,
+        DEFAULT_MAX_DECODE_COUNT, Reader, check_decode_count, check_decode_output_bytes,
+        decode_zigzag, encode_bitmap, encode_bytes, encode_string, encode_varuint, encode_zigzag,
+        extend_repeat_with_budget, max_decode_output_bytes,
     },
 };
 
@@ -2920,13 +2921,14 @@ fn rle_encode_bytes(input: &[u8]) -> Vec<u8> {
 }
 
 fn rle_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
+    let budget_input = input.len();
     let mut reader = Reader::new(input);
     let run_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..run_count {
         let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let byte = reader.read_u8()?;
-        extend_repeat(&mut out, byte, len)?;
+        extend_repeat_with_budget(&mut out, byte, len, 1, Some(budget_input))?;
     }
     if !reader.is_eof() {
         return Err(TwilicError::InvalidData(
@@ -3065,6 +3067,7 @@ fn control_huffman_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
             }
             let total = freqs.iter().map(|f| *f as usize).sum::<usize>();
             check_decode_count(total, DEFAULT_MAX_DECODE_COUNT)?;
+            check_decode_output_bytes(total, input.len())?;
             if total == 0 {
                 return Ok(Vec::new());
             }
@@ -3072,13 +3075,13 @@ fn control_huffman_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
                 .ok_or(TwilicError::InvalidData("control stream huffman tree"))?;
             if let HuffNode::Leaf(symbol) = nodes[root] {
                 let mut out = Vec::new();
-                extend_repeat(&mut out, symbol, total)?;
+                extend_repeat_with_budget(&mut out, symbol, total, 1, Some(input.len()))?;
                 return Ok(out);
             }
 
             let remaining = input.len().saturating_sub(reader.position());
             let bitstream = reader.read_exact(remaining)?;
-            let mut out = Vec::with_capacity(total);
+            let mut out = Vec::with_capacity(total.min(max_decode_output_bytes(input.len())));
             let mut byte_idx = 0usize;
             let mut bit_idx = 0u8;
             for _ in 0..total {
@@ -3219,6 +3222,7 @@ fn control_fse_frame_decode(input: &[u8]) -> Result<Vec<u8>> {
     }
     let table_size = 1u32 << table_log;
     let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+    check_decode_output_bytes(len, input.len())?;
     let used = reader.read_bounded_count(256)?;
     if used > 256 || used > table_size as usize {
         return Err(TwilicError::InvalidData("control stream fse used symbols"));
@@ -3280,7 +3284,7 @@ fn control_fse_frame_decode(input: &[u8]) -> Result<Vec<u8>> {
     let mut renorm_idx = renorm.len();
     let mask = table_size - 1;
 
-    let mut out = Vec::with_capacity(len);
+    let mut out = Vec::with_capacity(len.min(max_decode_output_bytes(input.len())));
     for _ in 0..len {
         let slot = (state & mask) as usize;
         let symbol = *decode_table

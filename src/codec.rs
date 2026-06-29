@@ -3,7 +3,7 @@ use crate::{
     model::VectorCodec,
     wire::{
         DEFAULT_MAX_DECODE_COUNT, Reader, check_byte_len, check_decode_count, check_element_bytes,
-        decode_zigzag, encode_varuint, encode_zigzag, extend_repeat,
+        decode_zigzag, encode_varuint, encode_zigzag, extend_repeat_with_budget,
     },
 };
 
@@ -175,12 +175,13 @@ fn encode_u64_rle(values: &[u64], out: &mut Vec<u8>) {
 }
 
 fn decode_u64_rle(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
+    let budget_input = reader.remaining();
     let runs_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..runs_len {
         let value = reader.read_varuint()?;
         let count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
-        extend_repeat(&mut out, value, count)?;
+        extend_repeat_with_budget(&mut out, value, count, 8, Some(budget_input))?;
     }
     Ok(out)
 }
@@ -461,12 +462,13 @@ fn encode_i64_rle(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_rle(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
+    let budget_input = reader.remaining();
     let runs_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..runs_len {
         let value = decode_zigzag(reader.read_varuint()?);
         let count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
-        extend_repeat(&mut out, value, count)?;
+        extend_repeat_with_budget(&mut out, value, count, 8, Some(budget_input))?;
     }
     Ok(out)
 }

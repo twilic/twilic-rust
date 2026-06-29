@@ -3,8 +3,61 @@ use twilic as twilic_rust;
 use twilic_rust::{
     TwilicCodec, TwilicError,
     model::{ControlMessage, ControlStreamCodec, KeyRef, Message, MessageKind, Value},
-    wire::Reader,
+    wire::{DECODE_OUTPUT_RATIO_MSG, Reader, encode_varuint},
 };
+
+fn encode_control_stream_wire(codec: ControlStreamCodec, encoded_payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![MessageKind::ControlStream as u8, codec as u8];
+    encode_varuint(encoded_payload.len() as u64, &mut out);
+    out.extend_from_slice(encoded_payload);
+    out
+}
+
+#[test]
+fn control_stream_rle_rejects_decompression_bomb() {
+    let mut rle = Vec::new();
+    encode_varuint(1, &mut rle);
+    encode_varuint(100_000, &mut rle);
+    rle.push(0x00);
+    let bytes = encode_control_stream_wire(ControlStreamCodec::Rle, &rle);
+    let mut codec = TwilicCodec::default();
+    let err = codec
+        .decode_message(&bytes)
+        .expect_err("expected rle output ratio error");
+    assert!(err.to_string().contains(DECODE_OUTPUT_RATIO_MSG));
+}
+
+#[test]
+fn control_stream_huffman_rejects_decompression_bomb() {
+    let mut huff = vec![1];
+    encode_varuint(1, &mut huff);
+    huff.push(0x00);
+    encode_varuint(100_000, &mut huff);
+    let bytes = encode_control_stream_wire(ControlStreamCodec::Huffman, &huff);
+    let mut codec = TwilicCodec::default();
+    let err = codec
+        .decode_message(&bytes)
+        .expect_err("expected huffman output ratio error");
+    assert!(err.to_string().contains(DECODE_OUTPUT_RATIO_MSG));
+}
+
+#[test]
+fn control_stream_fse_rejects_decompression_bomb() {
+    let mut frame = vec![1];
+    encode_varuint(100_000, &mut frame);
+    encode_varuint(1, &mut frame);
+    frame.push(0x00);
+    encode_varuint(2, &mut frame);
+    encode_varuint(0, &mut frame);
+    let mut fse = vec![3];
+    fse.extend_from_slice(&frame);
+    let bytes = encode_control_stream_wire(ControlStreamCodec::Fse, &fse);
+    let mut codec = TwilicCodec::default();
+    let err = codec
+        .decode_message(&bytes)
+        .expect_err("expected fse output ratio error");
+    assert!(err.to_string().contains(DECODE_OUTPUT_RATIO_MSG));
+}
 
 #[test]
 fn control_stream_roundtrips_for_all_declared_codecs() {

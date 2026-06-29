@@ -1,9 +1,11 @@
 use crate::error::{Result, TwilicError};
 
 pub const DEFAULT_MAX_DECODE_COUNT: usize = 1 << 20;
+pub const DEFAULT_MAX_DECODE_OUTPUT_RATIO: usize = 1 << 10;
 
 pub const DECODE_COUNT_LIMIT_MSG: &str = "decode count limit exceeded";
 pub const DECODE_LENGTH_OVERFLOW_MSG: &str = "decode length overflow";
+pub const DECODE_OUTPUT_RATIO_MSG: &str = "decode output ratio exceeded";
 
 #[inline]
 pub fn check_decode_count(count: usize, max: usize) -> Result<()> {
@@ -35,12 +37,43 @@ pub fn check_element_bytes(
     }
 }
 
+#[inline]
+pub fn max_decode_output_bytes(input_len: usize) -> usize {
+    input_len
+        .saturating_mul(DEFAULT_MAX_DECODE_OUTPUT_RATIO)
+        .min(DEFAULT_MAX_DECODE_COUNT)
+}
+
+#[inline]
+pub fn check_decode_output_bytes(output_bytes: usize, input_len: usize) -> Result<()> {
+    if output_bytes > max_decode_output_bytes(input_len) {
+        return Err(TwilicError::InvalidData(DECODE_OUTPUT_RATIO_MSG));
+    }
+    Ok(())
+}
+
 pub fn extend_repeat<T: Clone>(out: &mut Vec<T>, value: T, count: usize) -> Result<()> {
+    extend_repeat_with_budget(out, value, count, 1, None)
+}
+
+pub fn extend_repeat_with_budget<T: Clone>(
+    out: &mut Vec<T>,
+    value: T,
+    count: usize,
+    element_bytes: usize,
+    input_len: Option<usize>,
+) -> Result<()> {
     let new_len = out
         .len()
         .checked_add(count)
         .ok_or(TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG))?;
     check_decode_count(new_len, DEFAULT_MAX_DECODE_COUNT)?;
+    if let Some(input_len) = input_len {
+        let output_bytes = new_len
+            .checked_mul(element_bytes)
+            .ok_or(TwilicError::InvalidData(DECODE_OUTPUT_RATIO_MSG))?;
+        check_decode_output_bytes(output_bytes, input_len)?;
+    }
     out.extend(std::iter::repeat_n(value, count));
     Ok(())
 }
@@ -114,6 +147,10 @@ impl<'a> Reader<'a> {
 
     pub fn position(&self) -> usize {
         self.offset
+    }
+
+    pub fn input_len(&self) -> usize {
+        self.input.len()
     }
 
     pub fn remaining(&self) -> usize {
