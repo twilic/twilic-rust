@@ -13,8 +13,8 @@ use crate::{
         DictionaryFallback, DictionaryProfile, SessionOptions, SessionState, UnknownReferencePolicy,
     },
     wire::{
-        Reader, decode_zigzag, encode_bitmap, encode_bytes, encode_string, encode_varuint,
-        encode_zigzag,
+        DEFAULT_MAX_DECODE_COUNT, Reader, check_decode_count, decode_zigzag, encode_bitmap, encode_bytes, encode_string, encode_varuint, encode_zigzag,
+        extend_repeat,
     },
 };
 
@@ -474,7 +474,7 @@ impl TwilicCodec {
         let message = match kind {
             MessageKind::Scalar => Message::Scalar(self.read_value(reader)?),
             MessageKind::Array => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(self.read_value(reader)?);
@@ -482,7 +482,7 @@ impl TwilicCodec {
                 Message::Array(values)
             }
             MessageKind::Map => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut entries = Vec::with_capacity(len);
                 for _ in 0..len {
                     let key = self.read_key_ref(reader)?;
@@ -508,7 +508,7 @@ impl TwilicCodec {
             MessageKind::ShapedObject => {
                 let shape_id = reader.read_varuint()?;
                 let presence = self.read_presence(reader)?;
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 if let Some(keys) = self
                     .state
@@ -552,7 +552,7 @@ impl TwilicCodec {
                     _ => return Err(TwilicError::InvalidData("schema flag")),
                 };
                 let presence = self.read_presence(reader)?;
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let encoding_mode = reader.read_u8()?;
                 let mut fields = Vec::with_capacity(len);
                 if encoding_mode == 1 {
@@ -588,10 +588,10 @@ impl TwilicCodec {
             }
             MessageKind::TypedVector => Message::TypedVector(self.read_typed_vector(reader, None)?),
             MessageKind::RowBatch => {
-                let row_count = reader.read_varuint()? as usize;
+                let row_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut rows = Vec::with_capacity(row_count);
                 for _ in 0..row_count {
-                    let field_count = reader.read_varuint()? as usize;
+                    let field_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                     let mut row = Vec::with_capacity(field_count);
                     for _ in 0..field_count {
                         row.push(self.read_value(reader)?);
@@ -602,7 +602,7 @@ impl TwilicCodec {
             }
             MessageKind::ColumnBatch => {
                 let count = reader.read_varuint()?;
-                let column_count = reader.read_varuint()? as usize;
+                let column_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut columns = Vec::with_capacity(column_count);
                 for _ in 0..column_count {
                     columns.push(self.read_column(reader)?);
@@ -616,7 +616,7 @@ impl TwilicCodec {
             },
             MessageKind::StatePatch => {
                 let base_ref = self.read_base_ref(reader)?;
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut operations = Vec::with_capacity(len);
                 for _ in 0..len {
                     let field_id = reader.read_varuint()?;
@@ -635,7 +635,7 @@ impl TwilicCodec {
                         value,
                     });
                 }
-                let lit_len = reader.read_varuint()? as usize;
+                let lit_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut literals = Vec::with_capacity(lit_len);
                 for _ in 0..lit_len {
                     literals.push(self.read_value(reader)?);
@@ -650,7 +650,7 @@ impl TwilicCodec {
                 let template_id = reader.read_varuint()?;
                 let count = reader.read_varuint()?;
                 let changed_column_mask = reader.read_bitmap()?;
-                let col_len = reader.read_varuint()? as usize;
+                let col_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut changed_columns = Vec::with_capacity(col_len);
                 for _ in 0..col_len {
                     changed_columns.push(self.read_column(reader)?);
@@ -835,7 +835,7 @@ impl TwilicCodec {
                     }
                     StringMode::PrefixDelta => {
                         let base_id = reader.read_varuint()?;
-                        let prefix_len = reader.read_varuint()? as usize;
+                        let prefix_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                         let suffix = reader.read_string()?;
                         let base = self
                             .state
@@ -851,7 +851,7 @@ impl TwilicCodec {
                         Ok(Value::String(value))
                     }
                     StringMode::InlineEnum => {
-                        let code = reader.read_varuint()? as usize;
+                        let code = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                         let identity = field_identity.ok_or(TwilicError::InvalidData(
                             "inline enum without field context",
                         ))?;
@@ -870,7 +870,7 @@ impl TwilicCodec {
             }
             TAG_BINARY => Ok(Value::Binary(reader.read_bytes()?)),
             TAG_ARRAY => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(self.read_value_with_field(reader, None)?);
@@ -878,7 +878,7 @@ impl TwilicCodec {
                 Ok(Value::Array(values))
             }
             TAG_MAP => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut entries = Vec::with_capacity(len);
                 for _ in 0..len {
                     let key = reader.read_string()?;
@@ -1076,7 +1076,7 @@ impl TwilicCodec {
                 if mode == 0 {
                     Ok(Value::String(reader.read_string()?))
                 } else if mode == 1 {
-                    let code = reader.read_varuint()? as usize;
+                    let code = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                     let values = self
                         .state
                         .field_enums
@@ -1187,7 +1187,7 @@ impl TwilicCodec {
     ) -> Result<TypedVector> {
         let element_type = ElementType::from_byte(reader.read_u8()?)
             .ok_or(TwilicError::InvalidData("element type"))?;
-        let expected_len = reader.read_varuint()? as usize;
+        let expected_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let codec = VectorCodec::from_byte(reader.read_u8()?)
             .ok_or(TwilicError::InvalidData("vector codec"))?;
         if let Some(expected) = expected_codec
@@ -1202,7 +1202,7 @@ impl TwilicCodec {
             ElementType::F64 => TypedVectorData::F64(decode_f64_vector(reader, codec)?),
             ElementType::String => TypedVectorData::String(self.read_string_vector(reader, codec)?),
             ElementType::Binary => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_bytes()?);
@@ -1210,7 +1210,7 @@ impl TwilicCodec {
                 TypedVectorData::Binary(values)
             }
             ElementType::Value => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(self.read_value(reader)?);
@@ -1467,7 +1467,7 @@ impl TwilicCodec {
             .ok_or(TwilicError::InvalidData("control opcode"))?;
         match op {
             ControlOpcode::RegisterKeys => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut keys = Vec::with_capacity(len);
                 for _ in 0..len {
                     let key = reader.read_string()?;
@@ -1478,7 +1478,7 @@ impl TwilicCodec {
             }
             ControlOpcode::RegisterShape => {
                 let shape_id = reader.read_varuint()?;
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut key_refs = Vec::with_capacity(len);
                 let mut keys = Vec::with_capacity(len);
                 for _ in 0..len {
@@ -1504,7 +1504,7 @@ impl TwilicCodec {
                 })
             }
             ControlOpcode::RegisterStrings => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     let value = reader.read_string()?;
@@ -1515,7 +1515,7 @@ impl TwilicCodec {
             }
             ControlOpcode::PromoteStringFieldToEnum => {
                 let field_identity = reader.read_string()?;
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_string()?);
@@ -1691,15 +1691,15 @@ impl TwilicCodec {
     ) -> Result<Vec<String>> {
         match codec {
             VectorCodec::Dictionary | VectorCodec::StringRef => {
-                let dict_len = reader.read_varuint()? as usize;
+                let dict_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut dict = Vec::with_capacity(dict_len);
                 for _ in 0..dict_len {
                     dict.push(reader.read_string()?);
                 }
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
-                    let id = reader.read_varuint()? as usize;
+                    let id = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                     let value = dict
                         .get(id)
                         .ok_or(TwilicError::InvalidData("string vector dictionary id"))?
@@ -1709,7 +1709,7 @@ impl TwilicCodec {
                 Ok(values)
             }
             VectorCodec::PrefixDelta => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 if len == 0 {
                     return Ok(Vec::new());
                 }
@@ -1717,7 +1717,7 @@ impl TwilicCodec {
                 let mut values = Vec::with_capacity(len);
                 values.push(first);
                 for idx in 1..len {
-                    let prefix_len = reader.read_varuint()? as usize;
+                    let prefix_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                     let suffix = reader.read_string()?;
                     let prev = &values[idx - 1];
                     if prefix_len > prev.len() || !prev.is_char_boundary(prefix_len) {
@@ -1729,7 +1729,7 @@ impl TwilicCodec {
                 Ok(values)
             }
             _ => {
-                let len = reader.read_varuint()? as usize;
+                let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
                 let mut values = Vec::with_capacity(len);
                 for _ in 0..len {
                     values.push(reader.read_string()?);
@@ -2921,12 +2921,12 @@ fn rle_encode_bytes(input: &[u8]) -> Vec<u8> {
 
 fn rle_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
     let mut reader = Reader::new(input);
-    let run_count = reader.read_varuint()? as usize;
+    let run_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..run_count {
-        let len = reader.read_varuint()? as usize;
+        let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let byte = reader.read_u8()?;
-        out.extend(std::iter::repeat_n(byte, len));
+        extend_repeat(&mut out, byte, len)?;
     }
     if !reader.is_eof() {
         return Err(TwilicError::InvalidData(
@@ -2981,7 +2981,7 @@ fn control_bitpack_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
             Ok(reader.read_exact(remaining)?.to_vec())
         }
         1 | 2 | 4 => {
-            let len = reader.read_varuint()? as usize;
+            let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
             let remaining = input.len().saturating_sub(reader.position());
             let packed = reader.read_exact(remaining)?;
             unpack_fixed_width_u8(packed, len, mode)
@@ -3053,7 +3053,7 @@ fn control_huffman_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
             Ok(reader.read_exact(remaining)?.to_vec())
         }
         1 => {
-            let used = reader.read_varuint()? as usize;
+            let used = reader.read_bounded_count(256)?;
             let mut freqs = [0u32; 256];
             for _ in 0..used {
                 let symbol = reader.read_u8()? as usize;
@@ -3064,13 +3064,16 @@ fn control_huffman_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
                 freqs[symbol] = freq as u32;
             }
             let total = freqs.iter().map(|f| *f as usize).sum::<usize>();
+            check_decode_count(total, DEFAULT_MAX_DECODE_COUNT)?;
             if total == 0 {
                 return Ok(Vec::new());
             }
             let (nodes, root) = build_huffman_tree(&freqs)
                 .ok_or(TwilicError::InvalidData("control stream huffman tree"))?;
             if let HuffNode::Leaf(symbol) = nodes[root] {
-                return Ok(std::iter::repeat_n(symbol, total).collect());
+                let mut out = Vec::new();
+                extend_repeat(&mut out, symbol, total)?;
+                return Ok(out);
             }
 
             let remaining = input.len().saturating_sub(reader.position());
@@ -3215,8 +3218,8 @@ fn control_fse_frame_decode(input: &[u8]) -> Result<Vec<u8>> {
         return Err(TwilicError::InvalidData("control stream fse table log"));
     }
     let table_size = 1u32 << table_log;
-    let len = reader.read_varuint()? as usize;
-    let used = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+    let used = reader.read_bounded_count(256)?;
     if used > 256 || used > table_size as usize {
         return Err(TwilicError::InvalidData("control stream fse used symbols"));
     }
@@ -3464,6 +3467,7 @@ fn pack_fixed_width_u8(values: &[u8], width: u8, out: &mut Vec<u8>) {
 }
 
 fn unpack_fixed_width_u8(bytes: &[u8], len: usize, width: u8) -> Result<Vec<u8>> {
+    check_decode_count(len, DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::with_capacity(len);
     let mut acc = 0u32;
     let mut acc_bits = 0u8;
@@ -3528,6 +3532,7 @@ fn unpack_fixed_width_u64(bytes: &[u8], len: usize, width: u8) -> Result<Vec<u64
     if width > 64 {
         return Err(TwilicError::InvalidData("fixed-width u64 bit width"));
     }
+    check_decode_count(len, DEFAULT_MAX_DECODE_COUNT)?;
     if width == 0 {
         if bytes.iter().any(|byte| *byte != 0) {
             return Err(TwilicError::InvalidData("fixed-width u64 trailing bytes"));
@@ -3651,7 +3656,7 @@ fn merge_template_columns(
 
 fn decode_trained_dictionary_payload(payload: &[u8]) -> Result<Vec<String>> {
     let mut reader = Reader::new(payload);
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut values = Vec::with_capacity(len);
     for _ in 0..len {
         values.push(reader.read_string()?);
@@ -3719,7 +3724,7 @@ fn encode_trained_dictionary_block(
 fn decode_trained_dictionary_block(block: &[u8], dictionary: &[String]) -> Result<Vec<String>> {
     let mut reader = Reader::new(block);
     let mode = reader.read_u8()?;
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let ids = match mode {
         0 => {
             let mut ids = Vec::with_capacity(len);

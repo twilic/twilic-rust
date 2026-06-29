@@ -1,5 +1,45 @@
 use crate::error::{Result, TwilicError};
 
+pub const DEFAULT_MAX_DECODE_COUNT: usize = 1 << 20;
+
+pub const DECODE_COUNT_LIMIT_MSG: &str = "decode count limit exceeded";
+pub const DECODE_LENGTH_OVERFLOW_MSG: &str = "decode length overflow";
+
+#[inline]
+pub fn check_decode_count(count: usize, max: usize) -> Result<()> {
+    if count > max {
+        return Err(TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG));
+    }
+    Ok(())
+}
+
+#[inline]
+pub fn check_byte_len(len: usize, remaining: usize) -> Result<()> {
+    if len > remaining {
+        return Err(TwilicError::InvalidData(DECODE_LENGTH_OVERFLOW_MSG));
+    }
+    Ok(())
+}
+
+#[inline]
+pub fn check_element_bytes(count: usize, element_bytes: usize, remaining: usize, max: usize) -> Result<()> {
+    check_decode_count(count, max)?;
+    match count.checked_mul(element_bytes) {
+        Some(needed) if needed <= remaining => Ok(()),
+        _ => Err(TwilicError::InvalidData(DECODE_LENGTH_OVERFLOW_MSG)),
+    }
+}
+
+pub fn extend_repeat<T: Clone>(out: &mut Vec<T>, value: T, count: usize) -> Result<()> {
+    let new_len = out
+        .len()
+        .checked_add(count)
+        .ok_or(TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG))?;
+    check_decode_count(new_len, DEFAULT_MAX_DECODE_COUNT)?;
+    out.extend(std::iter::repeat_n(value, count));
+    Ok(())
+}
+
 #[inline(always)]
 pub fn encode_varuint(mut value: u64, out: &mut Vec<u8>) {
     if value < 0x80 {
@@ -71,8 +111,19 @@ impl<'a> Reader<'a> {
         self.offset
     }
 
+    pub fn remaining(&self) -> usize {
+        self.input.len().saturating_sub(self.offset)
+    }
+
     pub fn is_eof(&self) -> bool {
         self.offset >= self.input.len()
+    }
+
+    pub fn read_bounded_count(&mut self, max: usize) -> Result<usize> {
+        let raw = self.read_varuint()?;
+        let count = usize::try_from(raw).map_err(|_| TwilicError::InvalidData(DECODE_COUNT_LIMIT_MSG))?;
+        check_decode_count(count, max)?;
+        Ok(count)
     }
 
     pub fn read_u8(&mut self) -> Result<u8> {
@@ -85,6 +136,7 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_exact(&mut self, len: usize) -> Result<&'a [u8]> {
+        check_byte_len(len, self.remaining())?;
         let end = self
             .offset
             .checked_add(len)
@@ -120,20 +172,21 @@ impl<'a> Reader<'a> {
     }
 
     pub fn read_bytes(&mut self) -> Result<Vec<u8>> {
-        let len = self.read_varuint()? as usize;
+        let len = self.read_bounded_count(self.remaining())?;
         Ok(self.read_exact(len)?.to_vec())
     }
 
     pub fn read_string(&mut self) -> Result<String> {
-        let len = self.read_varuint()? as usize;
+        let len = self.read_bounded_count(self.remaining())?;
         let bytes = self.read_exact(len)?;
         let value = std::str::from_utf8(bytes).map_err(|_| TwilicError::Utf8Error)?;
         Ok(value.to_owned())
     }
 
     pub fn read_bitmap(&mut self) -> Result<Vec<bool>> {
-        let bit_count = self.read_varuint()? as usize;
+        let bit_count = self.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let byte_count = bit_count.div_ceil(8);
+        check_byte_len(byte_count, self.remaining())?;
         let bytes = self.read_exact(byte_count)?;
         let mut bits = Vec::with_capacity(bit_count);
         for i in 0..bit_count {

@@ -1,7 +1,10 @@
 use crate::{
     error::{Result, TwilicError},
     model::VectorCodec,
-    wire::{Reader, decode_zigzag, encode_varuint, encode_zigzag},
+    wire::{
+        DEFAULT_MAX_DECODE_COUNT, Reader, check_byte_len, check_decode_count, check_element_bytes,
+        decode_zigzag, encode_varuint, encode_zigzag, extend_repeat,
+    },
 };
 
 pub fn encode_i64_vector(values: &[i64], codec: VectorCodec, out: &mut Vec<u8>) {
@@ -145,7 +148,7 @@ fn encode_u64_plain(values: &[u64], out: &mut Vec<u8>) {
 }
 
 fn decode_u64_plain(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
         out.push(reader.read_varuint()?);
@@ -172,12 +175,12 @@ fn encode_u64_rle(values: &[u64], out: &mut Vec<u8>) {
 }
 
 fn decode_u64_rle(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
-    let runs_len = reader.read_varuint()? as usize;
+    let runs_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..runs_len {
         let value = reader.read_varuint()?;
-        let count = reader.read_varuint()? as usize;
-        out.extend(std::iter::repeat_n(value, count));
+        let count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+        extend_repeat(&mut out, value, count)?;
     }
     Ok(out)
 }
@@ -199,7 +202,7 @@ fn encode_u64_direct_bitpack(values: &[u64], out: &mut Vec<u8>) {
 }
 
 fn decode_u64_direct_bitpack(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let width = reader.read_u8()?;
     if len == 0 {
         return Ok(Vec::new());
@@ -225,7 +228,8 @@ pub fn decode_f64_vector(reader: &mut Reader<'_>, codec: VectorCodec) -> Result<
     if matches!(codec, VectorCodec::XorFloat) {
         return decode_xor_float(reader);
     }
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+    check_element_bytes(len, 8, reader.remaining(), DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
         let mut bytes = [0u8; 8];
@@ -243,7 +247,7 @@ fn encode_i64_plain(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_plain(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
         out.push(decode_zigzag(reader.read_varuint()?));
@@ -353,7 +357,7 @@ fn encode_u64_simple8b_inner(values: &[u64], out: &mut Vec<u8>) {
 }
 
 fn decode_u64_simple8b_inner(reader: &mut Reader<'_>) -> Result<Vec<u64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -457,12 +461,12 @@ fn encode_i64_rle(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_rle(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
-    let runs_len = reader.read_varuint()? as usize;
+    let runs_len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let mut out = Vec::new();
     for _ in 0..runs_len {
         let value = decode_zigzag(reader.read_varuint()?);
-        let count = reader.read_varuint()? as usize;
-        out.extend(std::iter::repeat_n(value, count));
+        let count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+        extend_repeat(&mut out, value, count)?;
     }
     Ok(out)
 }
@@ -507,7 +511,7 @@ fn encode_i64_patched_for(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_patched_for(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -517,9 +521,9 @@ fn decode_i64_patched_for(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
     for _ in 0..len {
         values.push(reader.read_varuint()? as i64);
     }
-    let patch_count = reader.read_varuint()? as usize;
+    let patch_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     for _ in 0..patch_count {
-        let pos = reader.read_varuint()? as usize;
+        let pos = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let patch = reader.read_varuint()? as i64;
         if let Some(slot) = values.get_mut(pos) {
             *slot = patch;
@@ -560,7 +564,7 @@ fn encode_xor_float(values: &[f64], out: &mut Vec<u8>) {
 }
 
 fn decode_xor_float(reader: &mut Reader<'_>) -> Result<Vec<f64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -613,7 +617,7 @@ fn encode_i64_direct_bitpack(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_direct_bitpack(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     let width = reader.read_u8()?;
     if len == 0 {
         return Ok(Vec::new());
@@ -647,7 +651,7 @@ fn encode_i64_delta_delta(values: &[i64], out: &mut Vec<u8>) {
 }
 
 fn decode_i64_delta_delta(reader: &mut Reader<'_>) -> Result<Vec<i64>> {
-    let len = reader.read_varuint()? as usize;
+    let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -701,8 +705,10 @@ fn pack_u64_values(values: &[u64], width: u8, out: &mut Vec<u8>) {
 }
 
 fn unpack_u64_values(reader: &mut Reader<'_>, len: usize, width: u8) -> Result<Vec<u64>> {
+    check_decode_count(len, DEFAULT_MAX_DECODE_COUNT)?;
     let total_bits = len.saturating_mul(width as usize);
     let byte_len = total_bits.div_ceil(8);
+    check_byte_len(byte_len, reader.remaining())?;
     let bytes = reader.read_exact(byte_len)?;
     let mut out = Vec::with_capacity(len);
     let mut acc = 0u128;
