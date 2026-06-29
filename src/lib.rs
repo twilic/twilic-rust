@@ -10,6 +10,7 @@ pub use error::{Result, TwilicError};
 pub use model::{Message, Schema, Value};
 pub use protocol::{SessionEncoder, TwilicCodec};
 pub use session::{SessionOptions, UnknownReferencePolicy};
+pub use wire::DEFAULT_MAX_DECODE_COUNT;
 
 pub fn encode(value: &Value) -> Result<Vec<u8>> {
     v2::encode(value)
@@ -60,6 +61,33 @@ mod tests {
         bytes.push(0xC0);
         let value = v2::decode(&bytes).expect("decode at max depth");
         assert!(matches!(value, Value::Array(_)));
+    }
+
+    #[test]
+    fn v2_decode_rejects_excessive_array_length() {
+        // ARRAY32 tag with u32::MAX length (5 bytes) — must reject before allocating.
+        let bytes = [0xD3, 0xFF, 0xFF, 0xFF, 0xFF];
+        let err = v2::decode(&bytes).expect_err("expected count limit error");
+        assert!(err.to_string().contains("decode count limit exceeded"));
+    }
+
+    #[test]
+    fn decode_rejects_excessive_varuint_length_prefix() {
+        // fixarray 0x90 (empty) is valid; craft ARRAY32 with huge count via protocol v2 ARRAY32.
+        let err = decode(&[0xD3, 0x80, 0x80, 0x80, 0x80, 0x10]).expect_err("expected error");
+        assert!(err.to_string().contains("decode count limit exceeded"));
+    }
+
+    #[test]
+    fn wire_read_bitmap_rejects_excessive_count() {
+        use crate::wire::{DECODE_COUNT_LIMIT_MSG, Reader, encode_varuint};
+        let mut payload = Vec::new();
+        encode_varuint(DEFAULT_MAX_DECODE_COUNT as u64 + 1, &mut payload);
+        let mut reader = Reader::new(&payload);
+        let err = reader
+            .read_bitmap()
+            .expect_err("expected count limit error");
+        assert!(err.to_string().contains(DECODE_COUNT_LIMIT_MSG));
     }
 
     #[test]

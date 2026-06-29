@@ -3,7 +3,7 @@ use ahash::HashMap;
 use crate::{
     error::{Result, TwilicError},
     model::Value,
-    wire::{Reader, encode_varuint},
+    wire::{DEFAULT_MAX_DECODE_COUNT, Reader, check_byte_len, check_decode_count, encode_varuint},
 };
 
 const NULL_TAG: u8 = 0xC0;
@@ -45,6 +45,11 @@ struct EncodeState {
 pub const DEFAULT_MAX_DECODE_DEPTH: usize = 64;
 
 const DECODE_DEPTH_LIMIT_MSG: &str = "decode depth limit exceeded";
+const DECODE_SHAPE_LIMIT_MSG: &str = "decode shape limit exceeded";
+
+fn validate_container_len(len: usize) -> Result<()> {
+    check_decode_count(len, DEFAULT_MAX_DECODE_COUNT)
+}
 
 #[derive(Default)]
 struct DecodeState {
@@ -371,49 +376,54 @@ fn decode_value_from_tag(
         }
         BIN8_TAG => {
             let len = reader.read_u8()? as usize;
+            check_byte_len(len, reader.remaining())?;
             Ok(Value::Binary(reader.read_exact(len)?.to_vec()))
         }
         BIN16_TAG => {
             let mut len = [0u8; 2];
             len.copy_from_slice(reader.read_exact(2)?);
-            Ok(Value::Binary(
-                reader
-                    .read_exact(u16::from_le_bytes(len) as usize)?
-                    .to_vec(),
-            ))
+            let len = u16::from_le_bytes(len) as usize;
+            check_byte_len(len, reader.remaining())?;
+            Ok(Value::Binary(reader.read_exact(len)?.to_vec()))
         }
         BIN32_TAG => {
             let mut len = [0u8; 4];
             len.copy_from_slice(reader.read_exact(4)?);
-            Ok(Value::Binary(
-                reader
-                    .read_exact(u32::from_le_bytes(len) as usize)?
-                    .to_vec(),
-            ))
+            let len = u32::from_le_bytes(len) as usize;
+            check_byte_len(len, reader.remaining())?;
+            Ok(Value::Binary(reader.read_exact(len)?.to_vec()))
         }
         STR8_TAG | STR16_TAG | STR32_TAG => decode_string_tag(reader, state, tag),
         ARRAY16_TAG => {
             let mut len = [0u8; 2];
             len.copy_from_slice(reader.read_exact(2)?);
-            decode_array_body(reader, state, u16::from_le_bytes(len) as usize)
+            let len = u16::from_le_bytes(len) as usize;
+            validate_container_len(len)?;
+            decode_array_body(reader, state, len)
         }
         ARRAY32_TAG => {
             let mut len = [0u8; 4];
             len.copy_from_slice(reader.read_exact(4)?);
-            decode_array_body(reader, state, u32::from_le_bytes(len) as usize)
+            let len = u32::from_le_bytes(len) as usize;
+            validate_container_len(len)?;
+            decode_array_body(reader, state, len)
         }
         MAP16_TAG => {
             let mut len = [0u8; 2];
             len.copy_from_slice(reader.read_exact(2)?);
-            decode_map_body(reader, state, u16::from_le_bytes(len) as usize)
+            let len = u16::from_le_bytes(len) as usize;
+            validate_container_len(len)?;
+            decode_map_body(reader, state, len)
         }
         MAP32_TAG => {
             let mut len = [0u8; 4];
             len.copy_from_slice(reader.read_exact(4)?);
-            decode_map_body(reader, state, u32::from_le_bytes(len) as usize)
+            let len = u32::from_le_bytes(len) as usize;
+            validate_container_len(len)?;
+            decode_map_body(reader, state, len)
         }
         STR_REF_TAG => {
-            let id = reader.read_varuint()? as usize;
+            let id = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
             let Some(value) = state.strings.get(id).cloned() else {
                 return Err(TwilicError::InvalidData("unknown str_ref id"));
             };
@@ -442,6 +452,7 @@ fn decode_string_tag(reader: &mut Reader<'_>, state: &mut DecodeState, tag: u8) 
         }
         _ => unreachable!(),
     };
+    check_byte_len(len, reader.remaining())?;
     let bytes = reader.read_exact(len)?;
     let s = std::str::from_utf8(bytes)
         .map_err(|_| TwilicError::Utf8Error)?
@@ -466,17 +477,21 @@ fn decode_array_body_inner(
     state: &mut DecodeState,
     len: usize,
 ) -> Result<Value> {
+    validate_container_len(len)?;
     let mut values = Vec::with_capacity(len);
     if len == 0 {
         return Ok(Value::Array(values));
     }
     let first_tag = reader.read_u8()?;
     if first_tag == SHAPE_DEF_TAG {
-        let shape_id = reader.read_varuint()? as usize;
-        let key_count = reader.read_varuint()? as usize;
+        let shape_id = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
+        let key_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let mut keys = Vec::with_capacity(key_count);
         for _ in 0..key_count {
             keys.push(decode_key(reader, state)?);
+        }
+        if shape_id >= DEFAULT_MAX_DECODE_COUNT {
+            return Err(TwilicError::InvalidData(DECODE_SHAPE_LIMIT_MSG));
         }
         if shape_id >= state.shapes.len() {
             state.shapes.resize(shape_id + 1, Vec::new());
@@ -499,6 +514,7 @@ fn decode_array_body_inner(
 }
 
 fn decode_map_body(reader: &mut Reader<'_>, state: &mut DecodeState, len: usize) -> Result<Value> {
+    validate_container_len(len)?;
     state.enter_container()?;
     let mut entries = Vec::with_capacity(len);
     let decoded = (|| {
@@ -516,7 +532,7 @@ fn decode_map_body(reader: &mut Reader<'_>, state: &mut DecodeState, len: usize)
 fn decode_key(reader: &mut Reader<'_>, state: &mut DecodeState) -> Result<String> {
     let tag = reader.read_u8()?;
     if tag == KEY_REF_TAG {
-        let id = reader.read_varuint()? as usize;
+        let id = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let Some(value) = state.keys.get(id).cloned() else {
             return Err(TwilicError::InvalidData("unknown key_ref id"));
         };
