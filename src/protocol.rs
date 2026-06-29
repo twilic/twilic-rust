@@ -2921,13 +2921,17 @@ fn rle_encode_bytes(input: &[u8]) -> Vec<u8> {
 }
 
 fn rle_decode_bytes(input: &[u8]) -> Result<Vec<u8>> {
-    let budget_input = input.len();
     let mut reader = Reader::new(input);
     let run_count = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
-    let mut out = Vec::new();
+    let mut runs = Vec::with_capacity(run_count);
     for _ in 0..run_count {
         let len = reader.read_bounded_count(DEFAULT_MAX_DECODE_COUNT)?;
         let byte = reader.read_u8()?;
+        runs.push((byte, len));
+    }
+    let budget_input = reader.position();
+    let mut out = Vec::new();
+    for (byte, len) in runs {
         extend_repeat_with_budget(&mut out, byte, len, 1, Some(budget_input))?;
     }
     if !reader.is_eof() {
@@ -4144,5 +4148,20 @@ mod tests {
         };
 
         assert_eq!(find_template_id(&templates, &probe), Some(2));
+    }
+
+    #[test]
+    fn rle_decode_bytes_uses_consumed_run_budget_not_input_len() {
+        let mut encoded = Vec::new();
+        encode_varuint(1, &mut encoded);
+        encode_varuint(5_000, &mut encoded);
+        encoded.push(0xAB);
+        encoded.push(0);
+
+        let err = rle_decode_bytes(&encoded).expect_err("expected output ratio guard");
+        assert!(
+            err.to_string().contains(crate::wire::DECODE_OUTPUT_RATIO_MSG),
+            "unexpected error: {err}"
+        );
     }
 }
