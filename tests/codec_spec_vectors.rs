@@ -7,8 +7,25 @@ use twilic_rust::{
         encode_i64_vector, encode_u64_vector,
     },
     model::VectorCodec,
-    wire::{Reader, encode_varuint},
+    wire::{DECODE_OUTPUT_RATIO_MSG, Reader, encode_varuint},
 };
+
+#[test]
+fn vector_rle_rejects_decompression_bomb_despite_trailing_column_bytes() {
+    let mut rle = Vec::new();
+    encode_varuint(1, &mut rle);
+    encode_varuint(0, &mut rle);
+    encode_varuint(100_000, &mut rle);
+    let rle_byte_len = rle.len();
+    let mut bytes = rle;
+    bytes.extend(std::iter::repeat_n(0u8, 16 * 1024));
+
+    let mut reader = Reader::new(&bytes);
+    let err =
+        decode_u64_vector(&mut reader, VectorCodec::Rle).expect_err("expected output ratio error");
+    assert!(err.to_string().contains(DECODE_OUTPUT_RATIO_MSG));
+    assert_eq!(reader.position(), rle_byte_len);
+}
 
 #[test]
 fn simple8b_i64_roundtrip_small_values() {
